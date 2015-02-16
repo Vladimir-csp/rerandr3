@@ -132,6 +132,7 @@ get_data(){
 		fi
 	done < <(xrandr --verbose)
 	IFS=$OIFS
+	DPI="$(xdpyinfo | grep 'resolution:' | grep -o '[0-9]\+x[0-9]\+')"
 }
 
 dump_args(){
@@ -147,6 +148,7 @@ dump_args(){
 			[ "${ROLE[$OUTPUT_NUM]}" = "primary" ] && echo -n "--primary "
 		fi
 	done
+	echo -n "--dpi $DPI"
 }
 
 dump_auto_args(){
