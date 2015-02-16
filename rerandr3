@@ -53,7 +53,7 @@ prepare_confdir(){
 		CONF_DIR="$HOME/.config/rerandr3"
 	fi
 	mkdir -p "$CONF_DIR"
-	
+
 	[ -d "$CONF_DIR" -a -w "$CONF_DIR" ] || { echo "Could not access config directory \"$CONF_DIR\"!" >&2 ; exit 1 ;}
 }
 
@@ -64,8 +64,7 @@ prepare_pipe(){
 }
 get_data(){
 	OUTPUT_NUM=-1
-	EDID_CATCH=0
-	unset OUTPUT STATUS ROLE POSITION POSITION_X POSITION_Y CRTC MODEL SERIAL MODE_CURRENT MODE_PREFERRED EDID
+	unset OUTPUT STATUS ROLE POSITION POSITION_X POSITION_Y CRTC MODEL SERIAL MODE_CURRENT MODE_PREFERRED EDID EDID_CATCH RANDR ROTATION REFLECTION
 	OIFS=$IFS
 	echo "Gathering data..."
 	IFS=
@@ -74,25 +73,35 @@ get_data(){
 		if echo "$LINE" | grep -q '^[[:alnum:]_-]\+[[:space:]]\+\(connected\|disconnected\)'
 		then
 			OUTPUT_NUM=$(( $OUTPUT_NUM + 1 ))
-			OUTPUT[$OUTPUT_NUM]="$(echo "$LINE" | grep -o '^[^[:space:]]\+')"
-			STATUS[$OUTPUT_NUM]="$(echo "$LINE" | grep -ow 'connected\|disconnected')"
-			ROLE[$OUTPUT_NUM]="$(echo "$LINE" | grep -ow 'primary')"
-			MODE_CURRENT[$OUTPUT_NUM]="$(echo "$LINE" | grep -o '[0-9]\+x[0-9]\+[+-][0-9]\+[+-][0-9]\+' | grep -o '[0-9]\+x[0-9]\+')"
-			POSITION[$OUTPUT_NUM]="$(echo "$LINE" | grep -o '[0-9]\+x[0-9]\+[+-][0-9]\+[+-][0-9]\+' | grep -o '[+-][0-9]\+[+-][0-9]\+')"
-			POSITION_X[$OUTPUT_NUM]="$(echo ${POSITION[$OUTPUT_NUM]} | grep -o '[+-][0-9]\+' | head -n 1)"
-			POSITION_Y[$OUTPUT_NUM]="$(echo ${POSITION[$OUTPUT_NUM]} | grep -o '[+-][0-9]\+' | tail -n 1)"
-			[ "${STATUS[$OUTPUT_NUM]}" = "connected" ] && CONNECTED_OUTPUTS=( "${CONNECTED_OUTPUTS[@]}" "${OUTPUT[$OUTPUT_NUM]}" )
-			[ "${STATUS[$OUTPUT_NUM]}" = "disconnected" ] && DISCONNECTED_OUTPUTS=( "${DISCONNECTED_OUTPUTS[@]}" "${OUTPUT[$OUTPUT_NUM]}" )
-			[ "${ROLE[$OUTPUT_NUM]}" = "primary" ] && PRIMARY_OUTPUT="${OUTPUT[$OUTPUT_NUM]}" || SECONDARY_OUTPUTS=( "${SECONDARY_OUTPUTS[@]}" "${OUTPUT[$OUTPUT_NUM]}" )
+			OUTPUT[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -o '^[^[:space:]]\+')"
+			STATUS[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -ow 'connected\|disconnected')"
+			ROLE[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -ow 'primary')"
+			MODE_CURRENT[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -o '[0-9]\+x[0-9]\+[+-][0-9]\+[+-][0-9]\+' | grep -o '[0-9]\+x[0-9]\+')"
+			# everything else is irrelevant if output is disconnected
+			if [ "${STATUS[$OUTPUT_NUM]}" = "connected" ]
+			then
+				POSITION[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -o '[0-9]\+x[0-9]\+[+-][0-9]\+[+-][0-9]\+' | grep -o '[+-][0-9]\+[+-][0-9]\+')"
+				POSITION_X[$OUTPUT_NUM]="$(echo -n ${POSITION[$OUTPUT_NUM]} | grep -o '[+-][0-9]\+' | head -n 1)"
+				POSITION_Y[$OUTPUT_NUM]="$(echo -n ${POSITION[$OUTPUT_NUM]} | grep -o '[+-][0-9]\+' | tail -n 1)"
+				# active reflect and rotation settings are between ") ... ("
+				RANDR[$OUTPUT_NUM]="${LINE#*)}"
+				RANDR[$OUTPUT_NUM]="${RANDR[$OUTPUT_NUM]%%(*}"
+				ROTATION[$OUTPUT_NUM]="$(echo -n "${RANDR[$OUTPUT_NUM]}" | grep -o 'normal\|right\|inverted|\left')"
+				# 'x' and 'y' in xrandr output may vary in case
+				echo -n "${RANDR[$OUTPUT_NUM]}" | grep -qiw 'x' && REFLECTION[$OUTPUT_NUM]="x"
+				echo -n "${RANDR[$OUTPUT_NUM]}" | grep -qiw 'y' && REFLECTION[$OUTPUT_NUM]="${REFLECTION[$OUTPUT_NUM]}y"
+				[ -z "${REFLECTION[$OUTPUT_NUM]}" ] && REFLECTION[$OUTPUT_NUM]="normal"
+			fi
 			continue
 		fi
 
 		# get CRTC
+		# using crtc in saved configs works around xrandr position restore bug.
 		if echo "$LINE" | grep -q '^[[:space:]]\+CRTC:'
 		then
 			CRTC[$OUTPUT_NUM]="$(echo "$LINE" | grep -o '[0-9]\+')"
 			continue
-		fi		
+		fi
 
 		# trigger EDID catching
 		if echo "$LINE" | grep -q '^[[:space:]]\+EDID:'
@@ -104,23 +113,23 @@ get_data(){
 		# catch and combine EDID strings
 		if [ "$EDID_CATCH" = "1" ]
 		then
-			if echo "$LINE" | grep -q '^[[:space:]]\+[[:alnum:]]\+$'
+			if echo "$LINE" | grep -q '^[[:space:]]\+[[:xdigit:]]\+$'
 			then
-				EDID[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]}$(echo -n "$LINE" | grep -o '[[:alnum:]]\+')"
+				EDID[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]}$(echo -n "$LINE" | grep -o '[[:xdigit:]]\+')"
 				continue
 			else
 				EDID_CATCH=0
 				EDID[$OUTPUT_NUM]=$(echo ${EDID[$OUTPUT_NUM]} | fold -w2 | paste -sd\ )
 				MODEL[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]##*fc}"
 				MODEL[$OUTPUT_NUM]="${MODEL[$OUTPUT_NUM]%%0a*}"
-				MODEL[$OUTPUT_NUM]="$(echo ${MODEL[$OUTPUT_NUM]} | xxd -r -p | tr -cd '\11\12\15\40-\176' | tr ' ' '_' | sed 's/[^a-zA-Z0-9_-]//g')"
+				MODEL[$OUTPUT_NUM]="$(echo ${MODEL[$OUTPUT_NUM]} | xxd -r -p | tr -cd '\11\12\15\40-\176' | sed 's/[^a-zA-Z0-9_[:space:]-]//g;s/^[[:space:]]\+\|[[:space:]]\+$//g;s/[[:space:]]\+/_/g')"
 				SERIAL[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]##*ff}"
 				SERIAL[$OUTPUT_NUM]="${SERIAL[$OUTPUT_NUM]%%0a*}"
-				SERIAL[$OUTPUT_NUM]="$(echo ${SERIAL[$OUTPUT_NUM]} | xxd -r -p | tr -cd '\11\12\15\40-\176' | tr ' ' '_' | sed 's/[^a-zA-Z0-9_-]//g')"
-
+				SERIAL[$OUTPUT_NUM]="$(echo ${SERIAL[$OUTPUT_NUM]} | xxd -r -p | tr -cd '\11\12\15\40-\176' | sed 's/[^a-zA-Z0-9_[:space:]-]//g;s/^[[:space:]]\+\|[[:space:]]\+$//g;s/[[:space:]]\+/_/g')"
+				# do not skip cycle here, this is not EDID line
 			fi
 		fi
-	
+
 		# get preferred mode
 		if echo "$LINE" | grep -q '^[[:space:]]\+[0-9]\+x[0-9]\+'
 		then
@@ -133,6 +142,7 @@ get_data(){
 	done < <(xrandr --verbose)
 	IFS=$OIFS
 	DPI="$(xdpyinfo | grep 'resolution:' | grep -o '[0-9]\+x[0-9]\+')"
+	DIMENSIONS="$(xdpyinfo | grep dimensions | grep -o '[0-9]\+x[0-9]\+' | head -n 1)"
 }
 
 dump_args(){
@@ -143,33 +153,11 @@ dump_args(){
 		then
 			echo -n "--off "
 		else
-			[ -n "${MODE_CURRENT[$OUTPUT_NUM]}" ] && echo -n "--mode ${MODE_CURRENT[$OUTPUT_NUM]} "
-			echo -n "--pos ${POSITION_X[$OUTPUT_NUM]}x${POSITION_Y[$OUTPUT_NUM]} "
+			echo -n "--mode ${MODE_CURRENT[$OUTPUT_NUM]} --pos ${POSITION_X[$OUTPUT_NUM]}x${POSITION_Y[$OUTPUT_NUM]} --rotate ${ROTATION[$OUTPUT_NUM]} --reflect ${REFLECTION[$OUTPUT_NUM]} --crtc ${CRTC[$OUTPUT_NUM]} "
 			[ "${ROLE[$OUTPUT_NUM]}" = "primary" ] && echo -n "--primary "
 		fi
 	done
 	echo -n "--dpi $DPI"
-}
-
-dump_auto_args(){
-	# DO NOT USE, UNFINISHED!
-	LAST_ENABLED=
-	ENABLED_COUNT=0
-	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
-	do
-		echo -n "--output ${OUTPUT[$OUTPUT_NUM]} "
-		if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" ]
-		then
-			echo -n "--off "
-		elif [ "${STATUS[$OUTPUT_NUM]}" = "connected" ]
-		then
-			echo -n "--auto "
-			[ -z "$LAST_ENABLED" ] && echo -n "--primary "
-			[ -n "$LAST_ENABLED" ] && echo -n "--right-of $LAST_ENABLED "
-			LAST_ENABLED="${OUTPUT[$OUTPUT_NUM]}"
-			ENABLED_COUNT=$(( $ENABLED_COUNT + 1 ))
-		fi
-	done
 }
 
 dump_id(){
@@ -182,7 +170,8 @@ dump_id(){
 			FORMATTER=1
 			echo -n "${OUTPUT[$OUTPUT_NUM]}"
 			[ -n "${MODEL[$OUTPUT_NUM]}" ] && echo -n "-${MODEL[$OUTPUT_NUM]}"
-			[ -n "${SERIAL[$OUTPUT_NUM]}" -a -z "$(echo ${OUTPUT[$OUTPUT_NUM]} | grep LVDS)" ] && echo -n "-${SERIAL[$OUTPUT_NUM]}"
+			[ -n "${SERIAL[$OUTPUT_NUM]}" ] && echo -n "-${SERIAL[$OUTPUT_NUM]}"
+#			[ -n "${SERIAL[$OUTPUT_NUM]}" -a -z "$(echo ${OUTPUT[$OUTPUT_NUM]} | grep LVDS)" ] && echo -n "-${SERIAL[$OUTPUT_NUM]}"
 		fi
 	done
 }
@@ -197,7 +186,7 @@ save_setup(){
 apply_setup(){
 	SETUP_ID=$(dump_id)
 	SETUP_ARGS=$(dump_args)
-	
+
 	if [ -r "$CONF_DIR/${SETUP_ID}.rerandr" ]
 	then
 		echo "Applying configuration for setup \"${SETUP_ID}\"..."
@@ -206,40 +195,41 @@ apply_setup(){
 		then
 			echo "Nothing to do."
 		else
+			# disable everything preserving framebuffer size
+			# this works around xrandr CRTC allocation bug, also preserving window positions
+			DISABLE_ARGS="--fb $DIMENSIONS"
+			for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+			do
+				DISABLE_ARGS="$DISABLE_ARGS --output ${OUTPUT[$OUTPUT_NUM]} --off"
+			done
+			xrandr $DISABLE_ARGS
+			# disable disconnected outputs preserving framebuffer size
 			#for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
 			#do
 			#	if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
 			#	then
 			#		echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-			#		xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --off
+			#		xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
 			#	fi
 			#done
 
-			# disable other outputs which are not needed in saved setup
-			# dirty workaround for xrandr CRTC bug
-			for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
-			do
-				if [ -n "${MODE_CURRENT[$OUTPUT_NUM]}" -a -n "$(echo $SAVED_SETUP_ARGS | grep "${OUTPUT[$OUTPUT_NUM]} --off")" ]
-				then
-					echo "Disabling unneeded output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-					xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --off
-				fi
-			done
-			# sanitize args for security
+			# sanitize args from config for security
 			NEW_ARGS="$(cat "$CONF_DIR/${SETUP_ID}.rerandr" | tr -d ';&')"
 			xrandr $NEW_ARGS
 			applyhooks
 		fi
 	else
 		echo "No configuration found for setup \"${SETUP_ID}\"."
+		# disable disconnected outputs preserving framebuffer size
 		for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
 		do
 			if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
 			then
 				echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-				xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --off
+				xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
 			fi
 		done
+		# enable connected outputs stacking to the right
 		LAST_CONNECTED=
 		for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
 		do
