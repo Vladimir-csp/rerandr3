@@ -27,6 +27,6 @@ where command is one of:
 
 to use rerandr3 in 'full auto', create udev rule:
 
- KERNEL=="card0", SUBSYSTEM=="drm", RUN+="/usr/local/bin/rerandr3 trigger-restore"
+	KERNEL=="card0", SUBSYSTEM=="drm", RUN+="/usr/local/bin/rerandr3 trigger-restore"
 
 where "/usr/local/bin/rerandr3" is the full path to this script
