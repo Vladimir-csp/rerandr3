@@ -5,24 +5,22 @@ syntax:
 
 	rerandr command
 
-where command is one of:
+where *command* is one of:
 
-	save - save current uniqe monitor setup based on output names,
-		monitor models and serial numbers from EDID data.
+*save* - save current uniqe monitor setup based on output names,
+monitor models and serial numbers from EDID data.
 
+*restore* - if current monitor setup is known, apply stored config.
+If setup is unknown, try to disable everything disconnected and
+enable and stack everything connected.
 
-	restore - if current monitor setup is known, apply stored config.
-		If setup is unknown, try to disable everything disconnected and
-		enable and stack everything connected.
+*show* - dump setup ID and xrandr arguments of current state
 
+*daemon* - launch user session daemon for automatic triggering.
 
-	daemon - launch user session daemon for automatic triggering.
+*trigger-save* - tell daemon to do save.
 
-
-	trigger-save - tell daemon to do save.
-
-
-	trigger-restore - tell daemon to restore configuration.
+*trigger-restore* - tell daemon to restore configuration.
 
 
 to use rerandr3 in 'full auto', create udev rule:
