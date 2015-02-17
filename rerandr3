@@ -21,6 +21,8 @@
 # 		If setup is unknown, try to disable everything disconnected and
 # 		enable and stack everything connected.
 #
+# 	show - dump setup ID and xrandr arguments of current state
+#
 # 	daemon - launch user session daemon for automatic triggering.
 #
 # 	trigger-save - tell daemon to do save.
@@ -64,7 +66,7 @@ prepare_pipe(){
 }
 get_data(){
 	OUTPUT_NUM=-1
-	unset OUTPUT STATUS ROLE POSITION POSITION_X POSITION_Y CRTC MODEL SERIAL MODE_CURRENT MODE_PREFERRED EDID EDID_CATCH RANDR ROTATION REFLECTION
+	unset OUTPUT STATUS ROLE POSITION POSITION_X POSITION_Y CRTC MODEL SERIAL MODE_CURRENT MODE_PREFERRED EDID EDID_CATCH RANDR ROTATION REFLECTION GAMMA BRIGHTNESS TRANSFORM
 	OIFS=$IFS
 	echo "Gathering data..."
 	IFS=
@@ -118,7 +120,7 @@ get_data(){
 				EDID[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]}$(echo -n "$LINE" | grep -o '[[:xdigit:]]\+')"
 				continue
 			else
-				EDID_CATCH=0
+				unset EDID_CATCH
 				EDID[$OUTPUT_NUM]=$(echo ${EDID[$OUTPUT_NUM]} | fold -w2 | paste -sd\ )
 				MODEL[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]##*fc}"
 				MODEL[$OUTPUT_NUM]="${MODEL[$OUTPUT_NUM]%%0a*}"
@@ -126,9 +128,36 @@ get_data(){
 				SERIAL[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]##*ff}"
 				SERIAL[$OUTPUT_NUM]="${SERIAL[$OUTPUT_NUM]%%0a*}"
 				SERIAL[$OUTPUT_NUM]="$(echo ${SERIAL[$OUTPUT_NUM]} | xxd -r -p | tr -cd '\11\12\15\40-\176' | sed 's/[^a-zA-Z0-9_[:space:]-]//g;s/^[[:space:]]\+\|[[:space:]]\+$//g;s/[[:space:]]\+/_/g')"
-				# do not skip cycle here, this is not EDID line
+				# do not skip cycle here, we are not on EDID line any more
 			fi
 		fi
+
+		# trigger transformation catching
+		if echo "$LINE" | grep -q '^[[:space:]]\+Transform:'
+		then
+			TRANSFORM_CATCH=1
+			# remove header
+			LINE="${LINE#*:}"
+			# do not skip, data begins on the same line
+		fi
+		
+		# catch and combine transformation
+		if [ "$TRANSFORM_CATCH" = "1" ]
+		then
+			if echo "$LINE" | grep -q '^[[:space:]]\+[0-9\.[:space:]-]\+$'
+			then
+				[ -n "${TRANSFORM[$OUTPUT_NUM]}" ] && FORMATTER=',' || unset FORMATTER
+				TRANSFORM[$OUTPUT_NUM]="${TRANSFORM[$OUTPUT_NUM]}${FORMATTER}$(echo -n "$LINE" | sed 's/[^0-9\.[:space:]-]//g;s/^[[:space:]]\+\|[[:space:]]\+$//g;s/[[:space:]]\+/,/g')"
+				continue
+			else
+				unset TRANSFORM_CATCH
+				# do not skip cycle here, we are not on transform line any more
+			fi
+		fi
+
+		# get gamma and brightness
+		echo "$LINE" | grep -q '^[[:space:]]\+Gamma:' && GAMMA[$OUTPUT_NUM]="$(echo $LINE | sed 's/^[[:space:]]\+Gamma:[[:space:]]*//')"
+		echo "$LINE" | grep -q '^[[:space:]]\+Brightness:' && BRIGHTNESS[$OUTPUT_NUM]="$(echo $LINE | sed 's/^[[:space:]]\+Brightness:[[:space:]]*//')"
 
 		# get preferred mode
 		if echo "$LINE" | grep -q '^[[:space:]]\+[0-9]\+x[0-9]\+'
@@ -153,7 +182,13 @@ dump_args(){
 		then
 			echo -n "--off "
 		else
-			echo -n "--mode ${MODE_CURRENT[$OUTPUT_NUM]} --pos ${POSITION_X[$OUTPUT_NUM]}x${POSITION_Y[$OUTPUT_NUM]} --rotate ${ROTATION[$OUTPUT_NUM]} --reflect ${REFLECTION[$OUTPUT_NUM]} --crtc ${CRTC[$OUTPUT_NUM]} "
+			echo -n "--mode ${MODE_CURRENT[$OUTPUT_NUM]} --pos ${POSITION_X[$OUTPUT_NUM]}x${POSITION_Y[$OUTPUT_NUM]} "
+			[ -n "${ROTATION[$OUTPUT_NUM]}" ] && echo -n "--rotate ${ROTATION[$OUTPUT_NUM]} "
+			[ -n "${REFLECTION[$OUTPUT_NUM]}" ] && echo -n "--reflect ${REFLECTION[$OUTPUT_NUM]} "
+			[ -n "${CRTC[$OUTPUT_NUM]}" ] && echo -n "--crtc ${CRTC[$OUTPUT_NUM]} "
+			[ -n "${GAMMA[$OUTPUT_NUM]}" ] && echo -n "--gamma ${GAMMA[$OUTPUT_NUM]} "
+			[ -n "${BRIGHTNESS[$OUTPUT_NUM]}" ] && echo -n "--brightness ${BRIGHTNESS[$OUTPUT_NUM]} "
+			[ -n "${TRANSFORM[$OUTPUT_NUM]}" ] && echo -n "--transform ${TRANSFORM[$OUTPUT_NUM]} "
 			[ "${ROLE[$OUTPUT_NUM]}" = "primary" ] && echo -n "--primary "
 		fi
 	done
@@ -183,6 +218,73 @@ save_setup(){
 	echo "$SETUP_ARGS" > "$CONF_DIR/${SETUP_ID}.rerandr"
 }
 
+show_setup(){
+	SETUP_ID=$(dump_id)
+	SETUP_ARGS=$(dump_args)
+	echo "${SETUP_ID}"
+	echo "$SETUP_ARGS"
+}
+
+apply_saved(){
+	# sanitize args from config for security
+	SAVED_SETUP_ARGS="$(cat "$CONF_DIR/${SETUP_ID}.rerandr" | tr -d ';&')"
+	if [ "$SETUP_ARGS" = "$SAVED_SETUP_ARGS" ]
+	then
+		echo "Nothing to do."
+	else
+		# disable everything preserving framebuffer size
+		# this works around xrandr CRTC allocation bug, also preserving window positions
+		DISABLE_ARGS="--fb $DIMENSIONS"
+		for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+		do
+			DISABLE_ARGS="$DISABLE_ARGS --output ${OUTPUT[$OUTPUT_NUM]} --off"
+		done
+		xrandr $DISABLE_ARGS
+		# disable disconnected outputs preserving framebuffer size
+		#for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+		#do
+		#	if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
+		#	then
+		#		echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
+		#		xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
+		#	fi
+		#done
+
+		# apply
+		xrandr $SAVED_SETUP_ARGS
+		if [ "$?" = "0" ]
+		then
+			applyhooks
+		else
+			echo "Failed to apply saved configuration, trying auto..."
+			apply_auto
+		fi
+	fi
+}
+
+apply_auto(){
+	# disable disconnected outputs preserving framebuffer size
+	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+	do
+		if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
+		then
+			echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
+			xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
+		fi
+	done
+	# enable connected outputs stacking to the right
+	LAST_CONNECTED=
+	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+	do
+		if [ "${STATUS[$OUTPUT_NUM]}" = "connected" -a -z "${MODE_CURRENT[$OUTPUT_NUM]}" ]
+		then
+			echo "Enabling connected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
+			xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto
+		fi
+	done
+	applyhooks
+}
+
 apply_setup(){
 	SETUP_ID=$(dump_id)
 	SETUP_ARGS=$(dump_args)
@@ -190,58 +292,11 @@ apply_setup(){
 	if [ -r "$CONF_DIR/${SETUP_ID}.rerandr" ]
 	then
 		echo "Applying configuration for setup \"${SETUP_ID}\"..."
-		SAVED_SETUP_ARGS="$(cat "$CONF_DIR/${SETUP_ID}.rerandr")"
-		if [ "$SETUP_ARGS" = "$SAVED_SETUP_ARGS" ]
-		then
-			echo "Nothing to do."
-		else
-			# disable everything preserving framebuffer size
-			# this works around xrandr CRTC allocation bug, also preserving window positions
-			DISABLE_ARGS="--fb $DIMENSIONS"
-			for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
-			do
-				DISABLE_ARGS="$DISABLE_ARGS --output ${OUTPUT[$OUTPUT_NUM]} --off"
-			done
-			xrandr $DISABLE_ARGS
-			# disable disconnected outputs preserving framebuffer size
-			#for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
-			#do
-			#	if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
-			#	then
-			#		echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-			#		xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
-			#	fi
-			#done
-
-			# sanitize args from config for security
-			NEW_ARGS="$(cat "$CONF_DIR/${SETUP_ID}.rerandr" | tr -d ';&')"
-			xrandr $NEW_ARGS
-			applyhooks
-		fi
+		apply_saved
 	else
 		echo "No configuration found for setup \"${SETUP_ID}\"."
-		# disable disconnected outputs preserving framebuffer size
-		for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
-		do
-			if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
-			then
-				echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-				xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
-			fi
-		done
-		# enable connected outputs stacking to the right
-		LAST_CONNECTED=
-		for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
-		do
-			if [ "${STATUS[$OUTPUT_NUM]}" = "connected" -a -z "${MODE_CURRENT[$OUTPUT_NUM]}" ]
-			then
-				echo "Enabling connected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-				xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto
-			fi
-		done
-		applyhooks
+		apply_auto
 	fi
-	
 }
 
 ##############################################
@@ -301,6 +356,11 @@ then
 	prepare_confdir
 	get_data
 	apply_setup
+elif [ "$1" = "show" ]
+then
+	prepare_confdir
+	get_data
+	show_setup
 elif [ "$1" = "trigger-save" ]
 then
 	[ -p "$SOCKET" -a "$(stat -c %a "$SOCKET")" = "666" ] && echo save > "$SOCKET"
