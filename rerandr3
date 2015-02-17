@@ -21,13 +21,15 @@
 # 		If setup is unknown, try to disable everything disconnected and
 # 		enable and stack everything connected.
 #
-# 	show - dump setup ID and xrandr arguments of current state
+# 	show - dump setup ID and xrandr arguments of current state.
 #
 # 	daemon - launch user session daemon for automatic triggering.
 #
 # 	trigger-save - tell daemon to do save.
 #
 # 	trigger-restore - tell daemon to restore configuration.
+#
+# 	insert-udev - insert udev rule for auto triggering.
 #
 # to use rerandr3 in 'full auto', create udev rule:
 # KERNEL=="card0", SUBSYSTEM=="drm", RUN+="/usr/local/bin/rerandr3 trigger-restore"
@@ -40,6 +42,8 @@ PIXEL_TRIGGER=1100000
 
 SOCKET="/tmp/rerandr3.fifo"
 DAEMON_LOG="$HOME/.rerandr3.log"
+UDEV_RULE_FILE="/etc/udev/rules.d/95-rerandr3-monitor-trigger.rules"
+UDEV_RULE='KERNEL=="card0", SUBSYSTEM=="drm",  RUN+="/usr/local/bin/rerandr3 trigger-restore"'
 
 # check for needed tools
 for BINARY in xrandr xxd sed tr xdpyinfo
@@ -264,22 +268,29 @@ apply_saved(){
 
 apply_auto(){
 	# disable disconnected outputs preserving framebuffer size
+	# find some connected and enabled output
+	LAST_CONNECTED=
 	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
 	do
 		if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
 		then
 			echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
 			xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
+		elif [ "${STATUS[$OUTPUT_NUM]}" = "connected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
+		then
+			LAST_CONNECTED="${OUTPUT[$OUTPUT_NUM]}"
 		fi
 	done
+	
 	# enable connected outputs stacking to the right
-	LAST_CONNECTED=
 	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
 	do
 		if [ "${STATUS[$OUTPUT_NUM]}" = "connected" -a -z "${MODE_CURRENT[$OUTPUT_NUM]}" ]
 		then
 			echo "Enabling connected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-			xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto
+			[ -n "$LAST_CONNECTED" ] && xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto --right-of "$LAST_CONNECTED"
+			[ -z "$LAST_CONNECTED" ] && xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto
+			LAST_CONNECTED="${OUTPUT[$OUTPUT_NUM]}"
 		fi
 	done
 	applyhooks
@@ -344,7 +355,20 @@ else
 fi
 }
 
+check_udev(){
+	[ ! "$(cat "$UDEV_RULE_FILE" 2>/dev/null)" = "$UDEV_RULE" ] && echo -e "Info:\trerandr3 udev rule \"$UDEV_RULE_FILE\" is missing or invalid.\n\tAutomatic triggering is not possible.\n\tRun \"$(basename "$0") insert-udev\" to insert rule."
+}
 
+insert_udev(){
+	if [ "$UID" = "0" ]
+	then
+		echo "$UDEV_RULE" > "$UDEV_RULE_FILE"
+		udevadm control --reload
+	else
+		echo "You are not root. Can not insert udev rule" >&2
+		exit 1
+	fi	
+}
 
 if [ "$1" = "save" ]
 then
@@ -372,6 +396,7 @@ then
 elif [ "$1" = "daemon" ]
 then
 	prepare_pipe 2>&1 | tee -a "$DAEMON_LOG"
+	check_udev | tee -a "$DAEMON_LOG"
 	# trap to kill all child processes of script
 	trap 'kill $(jobs -p) &>/dev/null ; echo deadbeef > $SOCKET' EXIT
 	trap 'kill $(jobs -p) &>/dev/null ; echo deadbeef > $SOCKET' SIGHUP
@@ -395,4 +420,15 @@ then
 			sleep 5s
 		fi
 	done 2>&1 | tee -a "$DAEMON_LOG"
+elif [ "$1" = "insert-udev" ]
+then
+	echo "Will now insert udev rule:
+	$UDEV_RULE
+in file:
+	$UDEV_RULE_FILE
+Root access required."
+	sudo "$0" root-insert-udev
+elif [ "$1" = "root-insert-udev" ]
+then
+	insert_udev
 fi
