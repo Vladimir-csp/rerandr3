@@ -3,7 +3,7 @@ Bash multimonitor handler daemon next gen
 
 syntax:
 
-	rerandr command
+	rerandr3 command
 
 where *command* is one of:
 
