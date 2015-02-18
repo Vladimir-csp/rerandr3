@@ -8,33 +8,7 @@
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version. See <http://www.gnu.org/licenses/>.
 
-# syntax:
-#
-# 	rerandr command
-#
-# where command is one of:
-#
-# 	save - save current uniqe monitor setup based on output names,
-# 		monitor models and serial numbers from EDID data.
-#
-# 	restore - if current monitor setup is known, apply stored config.
-# 		If setup is unknown, try to disable everything disconnected and
-# 		enable and stack everything connected.
-#
-# 	show - dump setup ID and xrandr arguments of current state.
-#
-# 	daemon - launch user session daemon for automatic triggering.
-#
-# 	trigger-save - tell daemon to do save.
-#
-# 	trigger-restore - tell daemon to restore configuration.
-#
-# 	insert-udev - insert udev rule for auto triggering.
-#
-# to use rerandr3 in 'full auto', create udev rule:
-# KERNEL=="card0", SUBSYSTEM=="drm", RUN+="/usr/local/bin/rerandr3 trigger-restore"
-# where "/usr/local/bin/rerandr3" is the full path to this script
-
+# for help see show_help function or run rerandr3 help
 
 # hook trigger boundary in pixel quantity (width*height)
 # 1366 * 768 = 1049088
@@ -42,7 +16,7 @@ PIXEL_TRIGGER=1100000
 
 # which strategy to use when autostacking
 # (xrandr relative position options: --right-of, --left-of, --above, --below)
-AUTO_STRATEGY="--right-of"
+STACK_STRATEGY="--right-of"
 
 SOCKET="/tmp/rerandr3.fifo"
 DAEMON_LOG="$HOME/.rerandr3.log"
@@ -54,6 +28,40 @@ for BINARY in xrandr xxd sed tr xdpyinfo
 do
 	which $BINARY >/dev/null || { echo "$BINARY not found!" >&2 ; exit 1 ;}
 done
+
+show_help(){
+	cat << "EOF"
+syntax:
+
+	rerandr command
+
+where command is one of:
+
+	save - save current uniqe monitor setup based on output names,
+	monitor models and serial numbers from EDID data.
+
+	restore - if current monitor setup is known, apply stored config.
+	If setup is unknown, try to disable everything disconnected and
+	enable and stack everything connected.
+
+	show - dump setup ID and xrandr arguments of current state.
+
+	daemon - launch user session daemon for automatic triggering.
+
+	trigger-save - tell daemon to do save.
+
+	trigger-restore - tell daemon to restore configuration.
+
+	insert-udev - insert udev rule for auto triggering.
+
+to use rerandr3 in 'full auto', create udev rule:
+
+	KERNEL=="card0", SUBSYSTEM=="drm", RUN+="/usr/local/bin/rerandr3 trigger-restore"
+
+where "/usr/local/bin/rerandr3" is the full path to this script
+
+EOF
+}
 
 prepare_confdir(){
 	if [ -n "$XDG_CONFIG_HOME" ]
@@ -183,7 +191,7 @@ get_data(){
 }
 
 dump_args(){
-	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+	for OUTPUT_NUM in ${!OUTPUT[@]}
 	do
 		echo -n "--output ${OUTPUT[$OUTPUT_NUM]} "
 		if [ -z "${MODE_CURRENT[$OUTPUT_NUM]}" ]
@@ -205,7 +213,7 @@ dump_args(){
 
 dump_id(){
 	FORMATTER=
-	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+	for OUTPUT_NUM in ${!OUTPUT[@]}
 	do
 		if [ "${STATUS[$OUTPUT_NUM]}" = "connected" ]
 		then
@@ -234,29 +242,24 @@ show_setup(){
 }
 
 apply_saved(){
-	# sanitize args from config for security
+	# read from config file, strip everything but injection-safe characters
 	SAVED_SETUP_ARGS="$(cat "$CONF_DIR/${SETUP_ID}.rerandr" | sed 's/[^[:alnum:][:space:]\.,:_+-]//g')"
 	if [ "$SETUP_ARGS" = "$SAVED_SETUP_ARGS" ]
 	then
 		echo "Nothing to do."
 	else
-		# disable everything preserving framebuffer size
+		# first disable everything unneeded, preserving framebuffer size
 		# this works around xrandr CRTC allocation bug, also preserving window positions
-		DISABLE_ARGS="--fb $DIMENSIONS"
-		for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+		unset DISABLE_ARGS
+		for OUTPUT_NUM in ${!OUTPUT[@]}
 		do
-			DISABLE_ARGS="$DISABLE_ARGS --output ${OUTPUT[$OUTPUT_NUM]} --off"
+			if [ -n "${MODE_CURRENT[$OUTPUT_NUM]}" ] && echo "$SAVED_SETUP_ARGS" | grep -q "\--output ${OUTPUT[$OUTPUT_NUM]} --off"
+			then
+				echo "Disabling unneeded output ${OUTPUT[$OUTPUT_NUM]}"
+				DISABLE_ARGS="$DISABLE_ARGS --output ${OUTPUT[$OUTPUT_NUM]} --off"
+			fi
 		done
-		xrandr $DISABLE_ARGS
-		# disable disconnected outputs preserving framebuffer size
-		#for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
-		#do
-		#	if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
-		#	then
-		#		echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-		#		xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
-		#	fi
-		#done
+		xrandr --fb "$DIMENSIONS" $DISABLE_ARGS
 
 		# apply
 		xrandr $SAVED_SETUP_ARGS
@@ -271,41 +274,64 @@ apply_saved(){
 }
 
 apply_auto(){
-	# disable disconnected and secondary outputs preserving framebuffer size
-	LAST_PRIMARY=
-	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+	# disable disconnected outputs preserving framebuffer size
+	unset PRIMARY_NUM DISABLE_ARGS ACTIVE_NUMS ENABLE_NUMS LAST_ENABLED
+	for OUTPUT_NUM in ${!OUTPUT[@]}
 	do
 		if [ "${STATUS[$OUTPUT_NUM]}" = "disconnected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
 		then
 			echo "Disabling disconnected output \"${OUTPUT[$OUTPUT_NUM]}\"..."
-			xrandr --fb "$DIMENSIONS" --output "${OUTPUT[$OUTPUT_NUM]}" --off
+			DISABLE_ARGS="$DISABLE_ARGS --output ${OUTPUT[$OUTPUT_NUM]} --off"
+			# clear mode for output to be disabled
 			MODE_CURRENT[$OUTPUT_NUM]=
 		elif [ "${STATUS[$OUTPUT_NUM]}" = "connected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" -a "${ROLE[$OUTPUT_NUM]}" = "primary" ]
 		then
 			echo "found connected and active primary output ${OUTPUT[$OUTPUT_NUM]}"
-			LAST_PRIMARY="${OUTPUT[$OUTPUT_NUM]}"
+			PRIMARY_NUM=$OUTPUT_NUM
+			# collect active outputs
+			ACTIVE_NUMS=( "${ACTIVE_NUMS[@]}" "$OUTPUT_NUM" )
+		elif [ "${STATUS[$OUTPUT_NUM]}" = "connected" -a -n "${MODE_CURRENT[$OUTPUT_NUM]}" ]
+		then
+			# collect active outputs
+			ACTIVE_NUMS=( "${ACTIVE_NUMS[@]}" "$OUTPUT_NUM" )
+		elif [ "${STATUS[$OUTPUT_NUM]}" = "connected" -a -z "${MODE_CURRENT[$OUTPUT_NUM]}" ]
+		then
+			# collect inactive outputs to be enabled
+			ENABLE_NUMS=( "${ENABLE_NUMS[@]}" "$OUTPUT_NUM" )
 		fi
 	done
+	# apply disabing outputs
+	[ -n "$DISABLE_ARGS" ] && xrandr --fb "$DIMENSIONS" $DISABLE_ARGS
+	
+	# if there is no active primary, make one from first active or whatever
+	if [ -z "$PRIMARY_NUM" -a -n "${ACTIVE_NUMS[*]}" ]
+	then
+		echo "Making output ${OUTPUT[${ACTIVE_NUMS[0]}]} primary"
+		xrandr --fb "$DIMENSIONS" --output "${OUTPUT[${ACTIVE_NUMS[0]}]}" --auto --primary
+		PRIMARY_NUM="${ACTIVE_NUMS[0]}"
+	elif [ -z "$PRIMARY_NUM" -a -z "${ACTIVE_NUMS[*]}" ]
+	then
+		echo "Enabling output ${OUTPUT[${ENABLE_NUMS[0]}]} as primary"
+		xrandr --fb "$DIMENSIONS" --output ${OUTPUT[${ENABLE_NUMS[0]}]} --auto --primary
+		ACTIVE_NUMS=( "${ENABLE_NUMS[0]}" "${ACTIVE_NUMS[@]}" )
+		ENABLE_NUMS[0]=
+	fi
 
-	# enable connected outputs stacking to the right
-	for OUTPUT_NUM in `seq 0 $(( ${#OUTPUT[@]} - 1 ))`
+	# start enabling and stacking outputs
+	# enable sequential, single command will fail when we run out of CRTCs.
+	LAST_NUM="$PRIMARY_NUM"
+	for OUTPUT_NUM in ${ACTIVE_NUMS[@]} ${ENABLE_NUMS[@]}
 	do
-		if [ "${STATUS[$OUTPUT_NUM]}" = "connected" ]
+		if [ "$OUTPUT_NUM" != "$PRIMARY_NUM" ]
 		then
-			if [ -z "$LAST_PRIMARY" ]
-			then
-				echo "Enabling connected output \"${OUTPUT[$OUTPUT_NUM]}\" as primary..."
-				xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto --primary
-			elif [ -n "$LAST_PRIMARY" ]
-			then
-				echo "Enabling connected output \"${OUTPUT[$OUTPUT_NUM]}\"... as secondary"
-				xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto "$AUTO_STRATEGY" "$LAST_PRIMARY"
-			fi
-			LAST_PRIMARY="${OUTPUT[$OUTPUT_NUM]}"
+			echo  "Putting ouptut ${OUTPUT[$OUTPUT_NUM]} next to ${OUTPUT[$LAST_NUM]}"
+			xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto "$STACK_STRATEGY" "${OUTPUT[$LAST_NUM]}"
+			LAST_NUM=OUTPUT_NUM
 		fi
 	done
 	applyhooks
 }
+
 
 apply_setup(){
 	SETUP_ID=$(dump_id)
@@ -327,10 +353,10 @@ getsessionpid(){
 
 	# get display number
 	DPY=${DISPLAY#*\:}
-	DPY=${DPY%%.*}
+	DPY=${DPY%%\.*}
 
 	# get X pid
-	XPID=$(echo $(< /tmp/.X${DPY}-lock))
+	XPID=$(cat "/tmp/.X${DPY}-lock" | grep -o '[0-9]\+')
 
 	# get pid of xdm (or gdm, kdm, simple xinitrc, etc). usually it's parent of X
 	XDMPID=$(ps -o ppid --no-headers --pid=$XPID)
@@ -423,7 +449,10 @@ insert_udev(){
 	fi	
 }
 
-if [ "$1" = "save" ]
+if [ "$1" = "help" -o "$1" = "--help" -o "$1" = "-h" ]
+then
+	show_help
+elif [ "$1" = "save" ]
 then
 	prepare_confdir
 	get_data
@@ -502,4 +531,7 @@ Root access required."
 elif [ "$1" = "root-insert-udev" ]
 then
 	insert_udev
+else
+	show_help
+	exit 1
 fi
