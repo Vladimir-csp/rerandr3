@@ -80,6 +80,7 @@ prepare_pipe(){
 	[ "$(stat -c %a "$SOCKET")" != "666" ] && chmod 666 "$SOCKET"
 	[ ! -p "$SOCKET" -a "$(stat -c %a "$SOCKET")" != "666" ] && { echo "Could not prepare named pipe \"$SOCKET\"!" >&2 ; exit 1 ;}
 }
+
 get_data(){
 	OUTPUT_NUM=-1
 	unset OUTPUT STATUS ROLE POSITION POSITION_X POSITION_Y CRTC MODEL SERIAL MODE_CURRENT MODE_PREFERRED EDID EDID_CATCH RANDR ROTATION REFLECTION GAMMA BRIGHTNESS TRANSFORM
@@ -110,6 +111,7 @@ get_data(){
 				echo -n "${RANDR[$OUTPUT_NUM]}" | grep -qiw 'y' && REFLECTION[$OUTPUT_NUM]="${REFLECTION[$OUTPUT_NUM]}y"
 				[ -z "${REFLECTION[$OUTPUT_NUM]}" ] && REFLECTION[$OUTPUT_NUM]="normal"
 			fi
+			# done with this line
 			continue
 		fi
 
@@ -122,13 +124,14 @@ get_data(){
 		fi
 
 		# trigger EDID catching
+		# EDID data is multiline, starting on next line
 		if echo "$LINE" | grep -q '^[[:space:]]\+EDID:'
 		then
 			EDID_CATCH=1
 			continue
 		fi
 
-		# catch and combine EDID strings
+		# catch and combine EDID string
 		if [ "$EDID_CATCH" = "1" ]
 		then
 			if echo "$LINE" | grep -q '^[[:space:]]\+[[:xdigit:]]\+$'
@@ -136,7 +139,9 @@ get_data(){
 				EDID[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]}$(echo -n "$LINE" | grep -o '[[:xdigit:]]\+')"
 				continue
 			else
+				# edid string is over
 				unset EDID_CATCH
+				# extract data. Mad skillz in voodoo magic are used here.
 				EDID[$OUTPUT_NUM]=$(echo ${EDID[$OUTPUT_NUM]} | fold -w2 | paste -sd\ )
 				MODEL[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]##*fc}"
 				MODEL[$OUTPUT_NUM]="${MODEL[$OUTPUT_NUM]%%0a*}"
@@ -156,12 +161,13 @@ get_data(){
 			LINE="${LINE#*:}"
 			# do not skip, data begins on the same line
 		fi
-		
-		# catch and combine transformation
+
+		# catch and combine transformation data
 		if [ "$TRANSFORM_CATCH" = "1" ]
 		then
 			if echo "$LINE" | grep -q '^[[:space:]]\+[0-9\.[:space:]-]\+$'
 			then
+				# we need all the figures separated by commas in one line
 				[ -n "${TRANSFORM[$OUTPUT_NUM]}" ] && FORMATTER=',' || unset FORMATTER
 				TRANSFORM[$OUTPUT_NUM]="${TRANSFORM[$OUTPUT_NUM]}${FORMATTER}$(echo -n "$LINE" | sed 's/[^0-9\.[:space:]-]//g;s/^[[:space:]]\+\|[[:space:]]\+$//g;s/[[:space:]]\+/,/g')"
 				continue
@@ -186,11 +192,14 @@ get_data(){
 		fi
 	done < <(xrandr --verbose)
 	IFS=$OIFS
+	# get DPI value
 	DPI="$(xdpyinfo | grep 'resolution:' | grep -o '[0-9]\+x[0-9]\+')"
+	# get framebuffer size
 	DIMENSIONS="$(xdpyinfo | grep dimensions | grep -o '[0-9]\+x[0-9]\+' | head -n 1)"
 }
 
 dump_args(){
+	# echo current screen config in xrandr cli arguments
 	for OUTPUT_NUM in ${!OUTPUT[@]}
 	do
 		echo -n "--output ${OUTPUT[$OUTPUT_NUM]} "
@@ -212,6 +221,7 @@ dump_args(){
 }
 
 dump_id(){
+	# generate and echo setup ID based on output names, display models and serial numbers
 	FORMATTER=
 	for OUTPUT_NUM in ${!OUTPUT[@]}
 	do
@@ -222,7 +232,6 @@ dump_id(){
 			echo -n "${OUTPUT[$OUTPUT_NUM]}"
 			[ -n "${MODEL[$OUTPUT_NUM]}" ] && echo -n "-${MODEL[$OUTPUT_NUM]}"
 			[ -n "${SERIAL[$OUTPUT_NUM]}" ] && echo -n "-${SERIAL[$OUTPUT_NUM]}"
-#			[ -n "${SERIAL[$OUTPUT_NUM]}" -a -z "$(echo ${OUTPUT[$OUTPUT_NUM]} | grep LVDS)" ] && echo -n "-${SERIAL[$OUTPUT_NUM]}"
 		fi
 	done
 }
@@ -248,8 +257,8 @@ apply_saved(){
 	then
 		echo "Nothing to do."
 	else
-		# first disable everything unneeded, preserving framebuffer size
-		# this works around xrandr CRTC allocation bug, also preserving window positions
+		# first disable everything unneeded, this works around xrandr CRTC allocation bug
+		# preserve framebuffer size to preserve window positions
 		unset DISABLE_ARGS
 		for OUTPUT_NUM in ${!OUTPUT[@]}
 		do
@@ -259,14 +268,16 @@ apply_saved(){
 				DISABLE_ARGS="$DISABLE_ARGS --output ${OUTPUT[$OUTPUT_NUM]} --off"
 			fi
 		done
-		xrandr --fb "$DIMENSIONS" $DISABLE_ARGS
+		[ -n "$DISABLE_ARGS" ] && xrandr --fb "$DIMENSIONS" $DISABLE_ARGS
 
-		# apply
+		# apply saved config
 		xrandr $SAVED_SETUP_ARGS
 		if [ "$?" = "0" ]
 		then
+			# if applied successfully, go to hooks.
 			applyhooks
 		else
+			# if something wend wrong, go through auto routine
 			echo "Failed to apply saved configuration, trying auto..."
 			apply_auto
 		fi
@@ -274,7 +285,9 @@ apply_saved(){
 }
 
 apply_auto(){
-	# disable disconnected outputs preserving framebuffer size
+	# autostacking
+	# first disable disconnected outputs preserving framebuffer size
+	# mark active and primary outputs in the process
 	unset PRIMARY_NUM DISABLE_ARGS ACTIVE_NUMS ENABLE_NUMS LAST_ENABLED
 	for OUTPUT_NUM in ${!OUTPUT[@]}
 	do
@@ -302,7 +315,7 @@ apply_auto(){
 	done
 	# apply disabing outputs
 	[ -n "$DISABLE_ARGS" ] && xrandr --fb "$DIMENSIONS" $DISABLE_ARGS
-	
+
 	# if there is no active primary, make one from first active or whatever
 	if [ -z "$PRIMARY_NUM" -a -n "${ACTIVE_NUMS[*]}" ]
 	then
@@ -329,14 +342,19 @@ apply_auto(){
 			LAST_NUM=OUTPUT_NUM
 		fi
 	done
+	# in case framebuffer is still not updated to current config
+	xrandr --auto
+
 	applyhooks
 }
 
 
 apply_setup(){
+	# get data
 	SETUP_ID=$(dump_id)
 	SETUP_ARGS=$(dump_args)
 
+	# decide if restore saved or go with auto
 	if [ -r "$CONF_DIR/${SETUP_ID}.rerandr" ]
 	then
 		echo "Applying configuration for setup \"${SETUP_ID}\"..."
@@ -386,6 +404,20 @@ getsessionpid(){
 	[ -n "$SESSIONPID" ] && echo $SESSIONPID
 }
 
+check_udev(){
+	[ ! "$(cat "$UDEV_RULE_FILE" 2>/dev/null)" = "$UDEV_RULE" ] && echo -e "Info:\trerandr3 udev rule \"$UDEV_RULE_FILE\" is missing or invalid.\n\tAutomatic triggering is not possible.\n\tRun \"$(basename "$0") insert-udev\" to insert rule."
+}
+
+insert_udev(){
+	if [ "$UID" = "0" ]
+	then
+		echo "$UDEV_RULE" > "$UDEV_RULE_FILE"
+		udevadm control --reload
+	else
+		echo "You are not root. Can not insert udev rule" >&2
+		exit 1
+	fi
+}
 
 ##############################################
 #### window hooks
@@ -394,26 +426,27 @@ getsessionpid(){
 hooks() {
 	# do things on every switch
 	echo "Applying general hooks."
-	#killall -USR1 conky
+	wp-random
+	killall -USR1 conky
 }
 
 smallhooks() {
 	# do things if screen area is less than $PIXEL_TRIGGER
 	echo "Applying small screen hooks."
-	#wmctrl -xr Iceweasel	-b "add,maximized_horz,maximized_vert"
-	#wmctrl -xr Icedove		-b "add,maximized_horz,maximized_vert"
-	#wmctrl -xr Spacefm		-b "add,maximized_horz,maximized_vert"
+	wmctrl -xr Iceweasel	-b "add,maximized_horz,maximized_vert"
+	wmctrl -xr Icedove		-b "add,maximized_horz,maximized_vert"
+	wmctrl -xr Spacefm		-b "add,maximized_horz,maximized_vert"
 }
 
 largehooks() {
 	# do things if screen area is greater than $PIXEL_TRIGGER
 	echo "Applying large screen hooks."
-	#wmctrl -xr Iceweasel	-b "remove,maximized_vert,maximized_horz"
-	#wmctrl -xr Icedove	-b "remove,maximized_vert,maximized_horz"
-	#wmctrl -xr Spacefm	-b "remove,maximized_vert,maximized_horz"
-	#wmctrl -xr Iceweasel	-e "0,-1,-1,1280,$HEIGHT"
-	#wmctrl -xr Icedove	-e "0,-1,-1,1280,$HEIGHT"
-	#wmctrl -xr Spacefm	-e "0,-1,-1,1280,$HEIGHT"
+	wmctrl -xr Iceweasel	-b "remove,maximized_vert,maximized_horz"
+	wmctrl -xr Icedove	-b "remove,maximized_vert,maximized_horz"
+	wmctrl -xr Spacefm	-b "remove,maximized_vert,maximized_horz"
+	wmctrl -xr Iceweasel	-e "0,-1,-1,1280,$HEIGHT"
+	wmctrl -xr Icedove	-e "0,-1,-1,1280,$HEIGHT"
+	wmctrl -xr Spacefm	-e "0,-1,-1,1280,$HEIGHT"
 }
 
 applyhooks() {
@@ -432,21 +465,6 @@ applyhooks() {
 	fi
 	# hooks must not fail
 	true
-}
-
-check_udev(){
-	[ ! "$(cat "$UDEV_RULE_FILE" 2>/dev/null)" = "$UDEV_RULE" ] && echo -e "Info:\trerandr3 udev rule \"$UDEV_RULE_FILE\" is missing or invalid.\n\tAutomatic triggering is not possible.\n\tRun \"$(basename "$0") insert-udev\" to insert rule."
-}
-
-insert_udev(){
-	if [ "$UID" = "0" ]
-	then
-		echo "$UDEV_RULE" > "$UDEV_RULE_FILE"
-		udevadm control --reload
-	else
-		echo "You are not root. Can not insert udev rule" >&2
-		exit 1
-	fi	
 }
 
 if [ "$1" = "help" -o "$1" = "--help" -o "$1" = "-h" ]
