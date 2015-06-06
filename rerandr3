@@ -85,6 +85,7 @@ prepare_pipe(){
 }
 
 get_data(){
+	# parsing verbose xrandr output
 	OUTPUT_NUM=-1
 	unset OUTPUT STATUS ROLE POSITION POSITION_X POSITION_Y CRTC MODEL SERIAL MODE_CURRENT MODE_PREFERRED EDID EDID_CATCH RANDR ROTATION REFLECTION GAMMA BRIGHTNESS TRANSFORM
 	OIFS=$IFS
@@ -92,24 +93,33 @@ get_data(){
 	IFS=
 	while read LINE ; do
 		# get output name and status
+		# triggered by and connection status keyword and lack of indent.
 		if echo "$LINE" | grep -q '^[[:alnum:]_-]\+[[:space:]]\+\(connected\|disconnected\)'
 		then
+			# found new output
 			OUTPUT_NUM=$(( $OUTPUT_NUM + 1 ))
+			# get name, first non-whitespace block
 			OUTPUT[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -o '^[^[:space:]]\+')"
+			# get status by keyword
 			STATUS[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -ow 'connected\|disconnected')"
+			# check if primary
 			ROLE[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -ow 'primary')"
+			# get mode (XxY string)
 			MODE_CURRENT[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -o '[0-9]\+x[0-9]\+[+-][0-9]\+[+-][0-9]\+' | grep -o '[0-9]\+x[0-9]\+')"
 			# everything else is irrelevant if output is disconnected
 			if [ "${STATUS[$OUTPUT_NUM]}" = "connected" ]
 			then
+				# get position (+X+Y string and each component)
 				POSITION[$OUTPUT_NUM]="$(echo -n "$LINE" | grep -o '[0-9]\+x[0-9]\+[+-][0-9]\+[+-][0-9]\+' | grep -o '[+-][0-9]\+[+-][0-9]\+')"
 				POSITION_X[$OUTPUT_NUM]="$(echo -n ${POSITION[$OUTPUT_NUM]} | grep -o '[+-][0-9]\+' | head -n 1)"
 				POSITION_Y[$OUTPUT_NUM]="$(echo -n ${POSITION[$OUTPUT_NUM]} | grep -o '[+-][0-9]\+' | tail -n 1)"
 				# active reflect and rotation settings are between ") ... ("
 				RANDR[$OUTPUT_NUM]="${LINE#*)}"
 				RANDR[$OUTPUT_NUM]="${RANDR[$OUTPUT_NUM]%%(*}"
+				# get rotation by keyword
 				ROTATION[$OUTPUT_NUM]="$(echo -n "${RANDR[$OUTPUT_NUM]}" | grep -o 'normal\|right\|inverted|\left')"
-				# 'x' and 'y' in xrandr output may vary in case
+				# words 'x' and 'y' represent reflection, may vary in case
+				# conditionally compose proper value for --reflect
 				echo -n "${RANDR[$OUTPUT_NUM]}" | grep -qiw 'x' && REFLECTION[$OUTPUT_NUM]="x"
 				echo -n "${RANDR[$OUTPUT_NUM]}" | grep -qiw 'y' && REFLECTION[$OUTPUT_NUM]="${REFLECTION[$OUTPUT_NUM]}y"
 				[ -z "${REFLECTION[$OUTPUT_NUM]}" ] && REFLECTION[$OUTPUT_NUM]="normal"
@@ -119,27 +129,30 @@ get_data(){
 		fi
 
 		# get CRTC
-		# using crtc in saved configs works around xrandr position restore bug.
+		# using crtc in saved configs works around xrandr position restore bug... theoretically
 		if echo "$LINE" | grep -q '^[[:space:]]\+CRTC:'
 		then
 			CRTC[$OUTPUT_NUM]="$(echo "$LINE" | grep -o '[0-9]\+')"
+			# done with this line
 			continue
 		fi
 
 		# trigger EDID catching
-		# EDID data is multiline, starting on next line
 		if echo "$LINE" | grep -q '^[[:space:]]\+EDID:'
 		then
 			EDID_CATCH=1
+			# done with this line, data comes next
 			continue
 		fi
 
 		# catch and combine EDID string
 		if [ "$EDID_CATCH" = "1" ]
 		then
+			# capture while line contains only hexadecimal string
 			if echo "$LINE" | grep -q '^[[:space:]]\+[[:xdigit:]]\+$'
 			then
 				EDID[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]}$(echo -n "$LINE" | grep -o '[[:xdigit:]]\+')"
+				# get next line
 				continue
 			else
 				# edid string is over
@@ -152,7 +165,8 @@ get_data(){
 				SERIAL[$OUTPUT_NUM]="${EDID[$OUTPUT_NUM]##*ff}"
 				SERIAL[$OUTPUT_NUM]="${SERIAL[$OUTPUT_NUM]%%0a*}"
 				SERIAL[$OUTPUT_NUM]="$(echo ${SERIAL[$OUTPUT_NUM]} | xxd -r -p | tr -cd '\11\12\15\40-\176' | sed 's/[^a-zA-Z0-9_[:space:]-]//g;s/^[[:space:]]\+\|[[:space:]]\+$//g;s/[[:space:]]\+/_/g')"
-				# do not skip cycle here, we are not on EDID line any more
+
+				# do not skip line here, it may contain other data
 			fi
 		fi
 
@@ -162,19 +176,22 @@ get_data(){
 			TRANSFORM_CATCH=1
 			# remove header
 			LINE="${LINE#*:}"
-			# do not skip, data begins on the same line
+			# do not skip, data already begins on the same line
 		fi
 
 		# catch and combine transformation data
 		if [ "$TRANSFORM_CATCH" = "1" ]
 		then
+			# capture while line contains only digits and spaces
 			if echo "$LINE" | grep -q '^[[:space:]]\+[0-9\.[:space:]-]\+$'
 			then
 				# we need all the figures separated by commas in one line
 				[ -n "${TRANSFORM[$OUTPUT_NUM]}" ] && FORMATTER=',' || unset FORMATTER
 				TRANSFORM[$OUTPUT_NUM]="${TRANSFORM[$OUTPUT_NUM]}${FORMATTER}$(echo -n "$LINE" | sed 's/[^0-9\.[:space:]-]//g;s/^[[:space:]]\+\|[[:space:]]\+$//g;s/[[:space:]]\+/,/g')"
+				# get next line
 				continue
 			else
+				# transform data is over
 				unset TRANSFORM_CATCH
 				# do not skip cycle here, we are not on transform line any more
 			fi
@@ -187,6 +204,7 @@ get_data(){
 		# get preferred mode
 		if echo "$LINE" | grep -q '^[[:space:]]\+[0-9]\+x[0-9]\+'
 		then
+			# get by +preferred keyword
 			if echo "$LINE" | grep -q '\+preferred'
 			then
 				MODE_PREFERRED[$OUTPUT_NUM]="$(echo "$LINE" | grep -o '[0-9]\+x[0-9]\+')"
@@ -195,6 +213,7 @@ get_data(){
 		fi
 	done < <(xrandr --verbose)
 	IFS=$OIFS
+
 	# get DPI value
 	DPI="$(xdpyinfo | grep 'resolution:' | grep -o '[0-9]\+x[0-9]\+')"
 	# get framebuffer size
@@ -202,7 +221,7 @@ get_data(){
 }
 
 dump_args(){
-	# echo current screen config in xrandr cli arguments
+	# echo current screen config formatted in xrandr cli arguments
 	for OUTPUT_NUM in ${!OUTPUT[@]}
 	do
 		echo -n "--output ${OUTPUT[$OUTPUT_NUM]} "
@@ -234,7 +253,8 @@ dump_id(){
 			FORMATTER=1
 			echo -n "${OUTPUT[$OUTPUT_NUM]}"
 			[ -n "${MODEL[$OUTPUT_NUM]}" ] && echo -n "-${MODEL[$OUTPUT_NUM]}"
-			[ -n "${SERIAL[$OUTPUT_NUM]}" ] && echo -n "-${SERIAL[$OUTPUT_NUM]}"
+			# do not output serial number, makes setups more portable
+			#[ -n "${SERIAL[$OUTPUT_NUM]}" ] && echo -n "-${SERIAL[$OUTPUT_NUM]}"
 		fi
 	done
 }
@@ -429,6 +449,7 @@ insert_udev(){
 hooks() {
 	# do things on every switch
 	echo "Applying general hooks."
+	#nitrogen --restore
 	#killall -USR1 conky
 }
 
