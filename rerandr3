@@ -24,10 +24,13 @@ UDEV_RULE_FILE="/etc/udev/rules.d/95-rerandr3-monitor-trigger.rules"
 UDEV_RULE='KERNEL=="card0", SUBSYSTEM=="drm",  RUN+="/usr/local/bin/rerandr3 trigger-restore"'
 
 # check for needed tools
+BINFAIL=0
 for BINARY in xrandr xxd sed tr xdpyinfo
 do
-	which $BINARY >/dev/null || { echo "$BINARY not found!" >&2 ; exit 1 ;}
+	which $BINARY >/dev/null || { echo "$BINARY binary not found!" >&2 ; BINFAIL=1 ;}
 done
+[ "$BINFAIL" = "1" ] && exit 1 || true
+unset BINFAIL
 
 show_help(){
 	cat << "EOF"
