@@ -40,8 +40,8 @@ syntax:
 
 where command is one of:
 
-	save - save current uniqe monitor setup based on output names,
-	monitor models and serial numbers from EDID data.
+	save - save current uniqe monitor setup based on output names and
+	monitor models from EDID data.
 
 	restore - if current monitor setup is known, apply stored config.
 	If setup is unknown, try to disable everything disconnected and
