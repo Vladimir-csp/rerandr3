@@ -23,6 +23,9 @@ DAEMON_LOG="$HOME/.rerandr3.log"
 UDEV_RULE_FILE="/etc/udev/rules.d/95-rerandr3-monitor-trigger.rules"
 UDEV_RULE='KERNEL=="card0", SUBSYSTEM=="drm",  RUN+="/usr/local/bin/rerandr3 trigger-restore"'
 
+# Name of X process, needed for some checks
+XORG_PROCESS=Xorg
+
 # check for needed tools
 BINFAIL=0
 for BINARY in xrandr xxd sed tr xdpyinfo
@@ -514,6 +517,8 @@ then
 	true
 elif [ "$1" = "trigger-restore" ]
 then
+	# if there is no Xorg running, exit (workaround for messing with boot via udev rule)
+	ps -C $XORG_PROCESS >/dev/null 2>/dev/null || exit 0
 	[ -p "$SOCKET" -a "$(stat -c %a "$SOCKET")" = "666" ] && echo restore > "$SOCKET"
 	true
 elif [ "$1" = "daemon" ]
