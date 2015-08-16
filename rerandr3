@@ -21,7 +21,7 @@ STACK_STRATEGY="--right-of"
 SOCKET="/tmp/rerandr3.fifo"
 DAEMON_LOG="$HOME/.rerandr3.log"
 UDEV_RULE_FILE="/etc/udev/rules.d/95-rerandr3-monitor-trigger.rules"
-UDEV_RULE='KERNEL=="card0", SUBSYSTEM=="drm",  RUN+="/usr/local/bin/rerandr3 trigger-restore"'
+UDEV_RULE="KERNEL==\"card0\", SUBSYSTEM==\"drm\",  RUN+=\"$(readlink -f "$0") trigger-restore\""
 
 # Name of X process, needed for some checks
 XORG_PROCESS=Xorg
@@ -62,9 +62,7 @@ where command is one of:
 
 to use rerandr3 in 'full auto', create udev rule:
 
-	KERNEL=="card0", SUBSYSTEM=="drm", RUN+="/usr/local/bin/rerandr3 trigger-restore"
-
-where "/usr/local/bin/rerandr3" is the full path to this script
+	KERNEL=="card0", SUBSYSTEM=="drm", RUN+="/full/path/to/rerandr3 trigger-restore"
 
 EOF
 }
@@ -572,7 +570,9 @@ then
 	$UDEV_RULE
 in file:
 	$UDEV_RULE_FILE
-Root access required."
+Root access required.
+Press any key to continue, or Ctrl+c to cancel"
+ 	read -sn1
 	sudo "$0" root-insert-udev
 elif [ "$1" = "root-insert-udev" ]
 then
