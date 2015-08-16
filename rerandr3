@@ -518,7 +518,7 @@ then
 elif [ "$1" = "trigger-restore" ]
 then
 	# if there is no Xorg running, exit (workaround for messing with boot via udev rule)
-	ps -C $XORG_PROCESS >/dev/null 2>/dev/null || exit 0
+	ps -C "$XORG_PROCESS" >/dev/null 2>/dev/null || exit 0
 	[ -p "$SOCKET" -a "$(stat -c %a "$SOCKET")" = "666" ] && echo restore > "$SOCKET"
 	true
 elif [ "$1" = "daemon" ]
