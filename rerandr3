@@ -182,6 +182,7 @@ get_data(){
 
 		# get CRTC
 		# using crtc in saved configs works around xrandr position restore bug... theoretically
+		# update: it does not, but messes things up when trying to shuffle CRTCs around enabled outputs
 		if echo "$LINE" | grep -q '^[[:space:]]\+CRTC:'
 		then
 			CRTC[$OUTPUT_NUM]="$(echo "$LINE" | grep -o '[0-9]\+')"
@@ -284,7 +285,8 @@ dump_args(){
 			echo -n "--mode ${MODE_CURRENT[$OUTPUT_NUM]} --pos ${POSITION_X[$OUTPUT_NUM]}x${POSITION_Y[$OUTPUT_NUM]} "
 			[ -n "${ROTATION[$OUTPUT_NUM]}" ] && echo -n "--rotate ${ROTATION[$OUTPUT_NUM]} "
 			[ -n "${REFLECTION[$OUTPUT_NUM]}" ] && echo -n "--reflect ${REFLECTION[$OUTPUT_NUM]} "
-			[ -n "${CRTC[$OUTPUT_NUM]}" ] && echo -n "--crtc ${CRTC[$OUTPUT_NUM]} "
+			# disable CRTC saving, serves no real purpose, but breaks things sometimes.
+			#[ -n "${CRTC[$OUTPUT_NUM]}" ] && echo -n "--crtc ${CRTC[$OUTPUT_NUM]} "
 			[ -n "${GAMMA[$OUTPUT_NUM]}" ] && echo -n "--gamma ${GAMMA[$OUTPUT_NUM]} "
 			[ -n "${BRIGHTNESS[$OUTPUT_NUM]}" ] && echo -n "--brightness ${BRIGHTNESS[$OUTPUT_NUM]} "
 			[ -n "${TRANSFORM[$OUTPUT_NUM]}" ] && echo -n "--transform ${TRANSFORM[$OUTPUT_NUM]} "
