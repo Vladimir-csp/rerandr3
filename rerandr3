@@ -416,7 +416,7 @@ apply_auto(){
 		then
 			echo  "Putting ouptut ${OUTPUT[$OUTPUT_NUM]} next to ${OUTPUT[$LAST_NUM]}"
 			xrandr --output "${OUTPUT[$OUTPUT_NUM]}" --auto "$STACK_STRATEGY" "${OUTPUT[$LAST_NUM]}"
-			LAST_NUM="$OUTPUT_NUM$
+			LAST_NUM="$OUTPUT_NUM"
 		fi
 	done
 	# in case framebuffer is still not updated to current config
