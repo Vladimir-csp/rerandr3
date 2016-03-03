@@ -22,6 +22,9 @@ enable and stack everything connected.
 
 *trigger-restore* - tell daemon to restore configuration.
 
+*hooks* - just apply screen hooks
+
+*insert-udev* - insert udev rule for auto triggering.
 
 to use rerandr3 in 'full auto', create udev rule:
 
