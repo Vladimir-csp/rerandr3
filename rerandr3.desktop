@@ -1,8 +1,10 @@
 [Desktop Entry]
 # for using in session autostart
-Name=Rerandr3 daemon
+Name=Rerandr3
 GenericName=Monitor setup daemon
-Comment=Daemon that keeps monitors configured
+GenericName[ru]=Демон настройки мониторов
+Comment=Automatically configures monitors
+Comment[ru]=Автоматически конфигурирует мониторы
 Encoding=UTF-8
 Exec=rerandr3 daemon
 Type=Application
